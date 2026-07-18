@@ -1,43 +1,57 @@
-import asyncio
 import httpx
 
-# FastAPI 서버 주소
+# FastAPI 서버가 실행 중인 주소
 BASE_URL = "http://127.0.0.1:8000"
 
 
-async def main():
-    # 1. 서버로 전송할 테스트 데이터 객체
-    payload = {
-        "to_email": "krsoup09@gmail.com",  # 👈 수신할 메일 주소를 적어주세요.
-        "risk_type": "theft (절도 발생 구역)",
-        "detected_at": "2026-07-19 11:55:00",
-        "latitude": 37.5665,
-        "longitude": 126.9779,
-        "tracking_url": "https://maps.google.com"
+def get_single_risk():
+    """[엔드포인트 2] 단일 구역 안전도 분석 요청"""
+    print("\n--- [엔드포인트 2] 단일 위험도 분석 결과 호출 ---")
+
+    url = f"{BASE_URL}/map/risk-analysis/theft"
+    params = {
+        "lon": 127.10545342254238,  # 서울시청 중심 경도
+        "lat": 37.256197702645444,  # 서울시청 중심 위도
+        "radius": 100.0  # 검색 반경 (미터)
     }
 
-    print("[테스트] 이메일 알림 발송 요청을 시작합니다...")
-
-    # 2. 비동기 HTTP 클라이언트로 POST 요청 전송
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            response = await client.post(f"{BASE_URL}/send-notification", json=payload)
-
-            # 3. 결과 출력
-            print(f"▶ 서버 응답 상태 코드: {response.status_code}")
-            print(f"▶ 서버 응답 데이터: {response.json()}")
-
-            if response.status_code == 200:
-                print("🎉 이메일 발송 요청 성공!")
-            else:
-                print("❌ 발송 실패 (서버 에러)")
-
-        except httpx.ConnectError:
-            print("❌ 서버 연결 실패! FastAPI 서버가 켜져 있는지 확인하세요 (port: 8000)")
-        except Exception as e:
-            print(f"❌ 오류 발생: {e}")
+    # 동기 방식으로 요청 후 JSON 파싱
+    with httpx.Client() as client:
+        response = client.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            # 보기 편하게 정렬하여 출력
+            import json
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            print(f"에러 발생 ({response.status_code}): {response.text}")
 
 
-# 스크립트 실행 진입점
+def get_multi_risk():
+    """[엔드포인트 3] 다중 위험 요소 분석 요청"""
+    print("\n--- [엔드포인트 3] 다중 위험도 분석 결과 호출 ---")
+
+    url = f"{BASE_URL}/map/multi-risk-analysis"
+    # 동일한 key(types)로 여러 값을 넘길 때는 튜플 리스트 형태를 사용합니다.
+    params = [
+        ("types", "theft"),
+        ("types", "violence"),
+        ("lon", 126.9779),
+        ("lat", 37.5665),
+        ("radius", 150.0)
+    ]
+
+    with httpx.Client() as client:
+        response = client.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            import json
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            print(f"에러 발생 ({response.status_code}): {response.text}")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    # 필요한 함수만 주석을 해제하며 테스트해 보세요.
+    get_single_risk()
+    get_multi_risk()

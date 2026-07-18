@@ -17,11 +17,9 @@ load_dotenv()
 # -------------------------------------------------------------------------
 # [데이터 구조] 실시간 다중 사용자 위치 데이터 저장소
 # -------------------------------------------------------------------------
-# 실무 환경에서는 Redis나 DB를 쓰지만, 다중 접속 처리가 가능하도록
-# 스레드 세이프하게 접근 가능한 인메모리 딕셔너리를 구성합니다.
 user_locations: Dict[str, Dict] = {}
 
-# 1. 이메일 서버 및 API 설정 (본인의 정보로 변경 필요)
+# 1. 이메일 서버 및 API 설정
 GOOGLE_MAPS_API_KEY = os.getenv("api_key")
 
 conf = ConnectionConfig(
@@ -36,89 +34,36 @@ conf = ConnectionConfig(
     VALIDATE_CERTS=True
 )
 
-# 3. HTML 템플릿 정의
-HTML_TEMPLATE = """
-<!doctype html>
-<html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>위험 지역 진입 알림</title>
-  </head>
-  <body style="margin:0; padding:0; background:#f5f6f8; font-family:Arial, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; color:#222222;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f5f6f8;">
-      <tr>
-        <td align="center" style="padding:32px 16px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:620px; background:#ffffff; border:1px solid #e5e7eb;">
-            <tr>
-              <td style="padding:24px 32px; border-bottom:1px solid #e5e7eb;">
-                <p style="margin:0; color:#3567b7; font-size:15px; font-weight:700;">Safe Walk 알림</p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:34px 32px 28px;">
-                <h1 style="margin:0 0 16px; color:#1f2937; font-size:25px; font-weight:700; line-height:1.45;">⚠️ 자녀가 위험 지역에 진입했습니다</h1>
-                <p style="margin:0 0 24px; color:#4b5563; font-size:15px; line-height:1.7;">아래 위치는 위험 요소가 감지된 시점의 자녀 위치입니다. 안전 여부를 확인해 주세요.</p>
-
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px; border-collapse:collapse;">
-                  <tr>
-                    <td style="width:112px; padding:11px 12px; color:#6b7280; font-size:14px; border-top:1px solid #e5e7eb; background:#fafafa;">감지된 위험</td>
-                    <td style="padding:11px 12px; color:#1f2937; font-size:14px; font-weight:700; border-top:1px solid #e5e7eb;">{risk_type}</td>
-                  </tr>
-                  <tr>
-                    <td style="width:112px; padding:11px 12px; color:#6b7280; font-size:14px; border-top:1px solid #e5e7eb; background:#fafafa;">감지 시각</td>
-                    <td style="padding:11px 12px; color:#1f2937; font-size:14px; border-top:1px solid #e5e7eb;">{detected_at}</td>
-                  </tr>
-                </table>
-
-                <a href="{tracking_url}" target="_blank" style="display:block; text-decoration:none;">
-                  <img src="https://maps.googleapis.com/maps/api/staticmap?center={latitude},{longitude}&zoom=16&size=600x320&scale=2&maptype=roadmap&markers=color:red%7Clabel:C%7C{latitude},{longitude}&key={google_maps_key}" alt="자녀 위치 지도" width="554" style="display:block; width:100%; max-width:554px; height:auto; border:0;" />
-                </a>
-
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:20px 32px; border-top:1px solid #e5e7eb; color:#8b949e; font-size:12px; line-height:1.6;">본 메일은 Safe Walk의 위험 지역 알림 서비스에 의해 자동 발송되었습니다.</td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
-
-
 
 # 2. 클라이언트 입력 데이터 스키마 정의
 class NotificationRequest(BaseModel):
+    user_id: str  # 자녀를 식별하기 위한 고유 ID 필수 추가
     to_email: EmailStr
     risk_type: str
     detected_at: str
     latitude: float
     longitude: float
-    tracking_url: str = "https://example.com/track" # 기본값 예시
+
 
 class LocationUpdate(BaseModel):
     user_id: str
     lat: float
     lon: float
 
-# (기존 lifespan 및 이전 턴 변수들은 유지된다고 가정합니다)
 
 # -------------------------------------------------------------------------
 # [설정] CSV 파일 경로 및 전역 변수 설정
 # -------------------------------------------------------------------------
-CSV_FILE_PATH = "cctv_data.csv"  # 보유하신 csv 파일명을 입력하세요
+CSV_FILE_PATH = "cctv_data.csv"
 async_client = None
-cctv_df = None  # CSV 데이터를 담을 전역 변수
+cctv_df = None
 
 
-# 하버사인(Haversine) 공식을 이용한 두 위경도 간의 거리 계산 함수 (단위: 미터)
+# 하버사인(Haversine) 거리 계산 함수
 def calculate_distance(lat1, lon1, lat2, lon2):
     if pd.isna(lat1) or pd.isna(lon1) or pd.isna(lat2) or pd.isna(lon2):
         return float('inf')
-    R = 6371000  # 지구 반지름 (미터)
+    R = 6371000
     rad_lat1 = math.radians(lat1)
     rad_lat2 = math.radians(lat2)
     delta_lat = math.radians(lat2 - lat1)
@@ -130,22 +75,14 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 
-# -------------------------------------------------------------------------
-# Lifespan: 서버 시작 시 HTTP 클라이언트 생성 및 CSV 데이터 미리 로드
-# -------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global async_client, cctv_df
-
-    # 1. HTTP 비동기 클라이언트 준비
     async_client = httpx.AsyncClient(timeout=10.0)
     print("HTTP 비동기 클라이언트가 준비되었습니다.")
 
-    # 2. CCTV CSV 데이터셋 로드 (인코딩 수정)
     try:
-        # 한국 공공데이터 필수 인코딩인 cp949로 변경 시도
         cctv_df = pd.read_csv(CSV_FILE_PATH, encoding="cp949")
-        # 컬럼명 공백 제거
         cctv_df.columns = cctv_df.columns.str.strip()
         print(f"🎉 CCTV 데이터 로드 성공 (총 {len(cctv_df)}건)")
     except Exception as e:
@@ -158,9 +95,7 @@ async def lifespan(app: FastAPI):
             print(f"❌ 모든 인코딩 로드 실패: {e2}")
             cctv_df = None
 
-    yield  # ◀ 앱 구동 구간
-
-    # 3. 종료 시 자원 해제
+    yield
     await async_client.close()
     print("HTTP 비동기 클라이언트가 안전하게 종료되었습니다.")
 
@@ -174,20 +109,136 @@ TYPE_LIST = {
 }
 
 
-# 4. 알림 발송 엔드포인트
+# -------------------------------------------------------------------------
+# [추가] 실시간 위치 관리 및 관제 대시보드 엔드포인트
+# -------------------------------------------------------------------------
+@app.post("/user/location")
+async def update_user_location(data: LocationUpdate):
+    user_locations[data.user_id] = {
+        "lat": data.lat,
+        "lon": data.lon,
+        "updated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    return {"status": "success", "message": f"User {data.user_id} location updated."}
+
+
+@app.get("/user/location/{user_id}")
+async def get_user_location_raw(user_id: str):
+    if user_id not in user_locations:
+        raise HTTPException(status_code=404, detail="위치 데이터가 없습니다.")
+    return user_locations[user_id]
+
+
+@app.get("/tracking/{user_id}", response_class=HTMLResponse)
+async def tracking_view(user_id: str):
+    gmaps_base_url = "https://maps.google.com/?q="
+
+    template_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>실시간 위치 추적 - __USER_ID__</title>
+        <style>
+            body { font-family: sans-serif; background: #edf2f7; padding: 40px; text-align: center; }
+            .container { max-width: 500px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+            .status { font-size: 24px; color: #2d3748; font-weight: bold; margin-bottom: 20px; }
+            .info-box { background: #f7fafc; padding: 15px; border-radius: 6px; margin-bottom: 20px; text-align: left; font-size: 15px; }
+            .btn { display: inline-block; padding: 12px 24px; background: #4299e1; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; margin-top: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="status">📋 실시간 위치 모니터링 [__USER_ID__]</div>
+            <div class="info-box">
+                <div><strong>위도 (Lat):</strong> <span id="lat-val">로딩 중...</span></div>
+                <div style="margin-top: 8px;"><strong>경도 (Lon):</strong> <span id="lon-val">로딩 중...</span></div>
+                <div style="margin-top: 8px;"><strong>최종 수신 시각:</strong> <span id="time-val">-</span></div>
+            </div>
+            <a id="gmaps-btn" href="#" target="_blank" class="btn">구글 지도에서 보기</a>
+        </div>
+        <script>
+            const userId = "__USER_ID__";
+            const gmapsBase = "__GMAPS_BASE__";
+            async function fetchLocation() {
+                try {
+                    const response = await fetch(`/user/location/${userId}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        document.getElementById("lat-val").innerText = data.lat;
+                        document.getElementById("lon-val").innerText = data.lon;
+                        document.getElementById("time-val").innerText = data.updated_at;
+                        document.getElementById("gmaps-btn").href = gmapsBase + data.lat + "," + data.lon;
+                    }
+                } catch (error) { console.error(error); }
+            }
+            fetchLocation();
+            setInterval(fetchLocation, 5000);
+        </script>
+    </body>
+    </html>
+    """
+    rendered_html = template_html.replace("__USER_ID__", user_id).replace("__GMAPS_BASE__", gmaps_base_url)
+    return HTMLResponse(content=rendered_html, status_code=200)
+
+
+# -------------------------------------------------------------------------
+# [엔드포인트 4] 알림 발송 및 이메일 템플릿 처리
+# -------------------------------------------------------------------------
 @app.post("/send-notification")
 async def send_notification(payload: NotificationRequest):
-    # HTML 내 중괄호 치환 프로그래밍 처리
-    formatted_html = HTML_TEMPLATE.format(
-        risk_type=payload.risk_type,
-        detected_at=payload.detected_at,
-        tracking_url=payload.tracking_url,
-        latitude=payload.latitude,
-        longitude=payload.longitude,
-        google_maps_key=GOOGLE_MAPS_API_KEY
-    )
+    # 동적 추적 주소 생성
+    tracking_url = f"http://localhost:8000/tracking/{payload.user_id}"
 
-    # 이메일 메시지 생성
+    # 🔥 [중요] HTML 내부 CSS의 중괄호가 훼손되지 않도록 .replace() 치환 기법 도입으로 완벽 방어
+    HTML_TEMPLATE = """
+    <!doctype html>
+    <html lang="ko">
+      <head><meta charset="utf-8" /></head>
+      <body style="margin:0; padding:0; background:#f5f6f8; font-family:Arial, sans-serif; color:#222222;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f5f6f8;">
+          <tr>
+            <td align="center" style="padding:32px 16px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:620px; background:#ffffff; border:1px solid #e5e7eb;">
+                <tr>
+                  <td style="padding:24px 32px; border-bottom:1px solid #e5e7eb;">
+                    <p style="margin:0; color:#3567b7; font-size:15px; font-weight:700;">Safe Walk 알림</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:34px 32px 28px;">
+                    <h1 style="margin:0 0 16px; color:#1f2937; font-size:25px; font-weight:700;">⚠️ 자녀가 위험 지역에 진입했습니다</h1>
+                    <p style="margin:0 0 24px; color:#4b5563; font-size:15px;">안전 여부를 확인해 주세요.</p>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px; border-collapse:collapse; font-size:14px;">
+                      <tr>
+                        <td style="width:112px; padding:11px 12px; background:#fafafa; border-top:1px solid #e5e7eb;">감지된 위험</td>
+                        <td style="padding:11px 12px; font-weight:700; border-top:1px solid #e5e7eb;">__RISK_TYPE__</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:11px 12px; background:#fafafa; border-top:1px solid #e5e7eb;">감지 시각</td>
+                        <td style="padding:11px 12px; border-top:1px solid #e5e7eb;">__DETECTED_AT__</td>
+                      </tr>
+                    </table>
+                    <a href="__TRACKING_URL__" target="_blank" style="display:block; text-decoration:none;">
+                      <img src="https://maps.googleapis.com/maps/api/staticmap?center=__LAT__,__LON__&zoom=16&size=600x320&scale=2&maptype=roadmap&markers=color:red%7Clabel:C%7C__LAT__,__LON__&key=__GMAPS_KEY__" alt="자녀 위치 지도" width="554" style="display:block; width:100%; border:0;" />
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    formatted_html = HTML_TEMPLATE.replace("__RISK_TYPE__", payload.risk_type) \
+        .replace("__DETECTED_AT__", payload.detected_at) \
+        .replace("__TRACKING_URL__", tracking_url) \
+        .replace("__LAT__", str(payload.latitude)) \
+        .replace("__LON__", str(payload.longitude)) \
+        .replace("__GMAPS_KEY__", GOOGLE_MAPS_API_KEY or "")
+
     message = MessageSchema(
         subject="[Safe Walk] 자녀 위험 지역 진입 알림",
         recipients=[payload.to_email],
@@ -195,7 +246,6 @@ async def send_notification(payload: NotificationRequest):
         subtype=MessageType.html
     )
 
-    # 비동기 이메일 발송
     fm = FastMail(conf)
     try:
         await fm.send_message(message)
@@ -203,283 +253,101 @@ async def send_notification(payload: NotificationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # -------------------------------------------------------------------------
-# [엔드포인트 1] 기본 WMS 이미지 프록시 반환
+# [엔드포인트 1 & 2 & 3] 기존 조회 및 다중 분석 로직 (CCTV 컬럼 안정성 보강)
 # -------------------------------------------------------------------------
 @app.get("/map/wms/{type}")
-async def get_wms_image(
-        type: str,
-        bbox: str = Query(..., description="경계 영역 좌표 (예: 127.0,37.5,127.1,37.6)"),
-        srs: str = Query("EPSG:4326", description="좌표계"),
-        width: str = Query("512"),
-        height: str = Query("512"),
-):
-    if type not in TYPE_LIST:
-        raise HTTPException(status_code=400, detail="올바르지 않은 위험 종류입니다.")
-
-    params = {
-        "serviceKey": SERVICE_KEY, "srs": srs, "bbox": bbox,
-        "format": "image/png", "width": width, "height": height, "transparent": "TRUE",
-    }
-    WMS_URL = f"https://www.safemap.go.kr/openapi2/IF_00{TYPE_LIST[type]}_WMS"
-
+async def get_wms_image(type: str, bbox: str = Query(...), srs: str = Query("EPSG:4326"), width: str = Query("512"),
+                        height: str = Query("512")):
+    if type not in TYPE_LIST: raise HTTPException(status_code=400, detail="올바르지 않은 위험 종류입니다.")
+    params = {"serviceKey": SERVICE_KEY, "srs": srs, "bbox": bbox, "format": "image/png", "width": width,
+              "height": height, "transparent": "TRUE"}
     try:
-        response = await async_client.get(WMS_URL, params=params)
-        if response.status_code != 200:
-            raise HTTPException(status_code=500, detail="원격 GIS 서버 오류")
-
-        content_type = response.headers.get("Content-Type", "")
-        if "image" in content_type:
-            return Response(content=response.content, media_type=content_type)
-        return Response(content=response.text, media_type=content_type, status_code=400)
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=503, detail=f"서버 연결 실패: {exc}")
+        response = await async_client.get(f"https://www.safemap.go.kr/openapi2/IF_00{TYPE_LIST[type]}_WMS",
+                                          params=params)
+        return Response(content=response.content, media_type=response.headers.get("Content-Type", ""))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
-# -------------------------------------------------------------------------
-# [엔드포인트 2] 위경도 + CSV 데이터 연동 종합 위험도 분석
-# -------------------------------------------------------------------------
 @app.get("/map/risk-analysis/{type}")
-async def analyze_safety_risk(
-        type: str,
-        lon: float = Query(..., description="경도 (WGS84 경도, 예: 126.9779)"),
-        lat: float = Query(..., description="위도 (WGS84 위도, 예: 37.5665)"),
-        radius: float = Query(100.0, description="CCTV 검색 반경 (미터 단위, 기본값 100m)")
-):
-    if type not in TYPE_LIST:
-        raise HTTPException(status_code=400, detail="올바르지 않은 위험 종류입니다.")
+async def analyze_safety_risk(type: str, lon: float = Query(...), lat: float = Query(...),
+                              radius: float = Query(100.0)):
+    if type not in TYPE_LIST: raise HTTPException(status_code=400, detail="올바르지 않은 위험 종류입니다.")
 
-    # 1. WMS 타일 색상 분석 (기본 위험도 산출)
     delta = 0.0001
     bbox_str = f"{lon - delta},{lat - delta},{lon + delta},{lat + delta}"
-
-    wms_params = {
-        "serviceKey": SERVICE_KEY, "srs": "EPSG:4326", "bbox": bbox_str,
-        "format": "image/png", "width": "3", "height": "3", "transparent": "TRUE",
-    }
-    WMS_URL = f"https://www.safemap.go.kr/openapi2/IF_00{TYPE_LIST[type]}_WMS"
+    wms_params = {"serviceKey": SERVICE_KEY, "srs": "EPSG:4326", "bbox": bbox_str, "format": "image/png", "width": "3",
+                  "height": "3", "transparent": "TRUE"}
 
     wms_risk_score = 0
-    pixel_rgba = {"r": 0, "g": 0, "b": 0, "a": 0}
-
     try:
-        response = await async_client.get(WMS_URL, params=wms_params)
-        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-            image = Image.open(io.BytesIO(response.content)).convert("RGBA")
-            r, g, b, a = image.getpixel((1, 1))
-            pixel_rgba = {"r": r, "g": g, "b": b, "a": a}
+        res = await async_client.get(f"https://www.safemap.go.kr/openapi2/IF_00{TYPE_LIST[type]}_WMS",
+                                     params=wms_params)
+        if res.status_code == 200 and "image" in res.headers.get("Content-Type", ""):
+            img = Image.open(io.BytesIO(res.content)).convert("RGBA")
+            _, g, _, a = img.getpixel((1, 1))
+            if a > 0: wms_risk_score = round(30 + ((255 - g) / 255) * 70)
+    except Exception as e:
+        print(e)
 
-            if a > 0:  # 투명이 아니면 점수 부여 (노랑~빨강 분석)
-                base_score = 30
-                additional_score = ((255 - g) / 255) * 70
-                wms_risk_score = round(base_score + additional_score)
-    except Exception as exc:
-        # WMS 통신 실패 시 로그를 남기고 WMS 점수는 0점으로 처리 (CCTV 단독 계산 방어코드)
-        print(f"WMS 통신 또는 분석 실패: {exc}")
-
-    # 2. CSV 기반 주변 CCTV 분석 (방범 환경 분석)
     nearby_cctv_count = 0
     total_camera_units = 0
-    avg_pixels = 0
-    cctv_mitigation_score = 0  # CCTV로 인해 경감되는 위험도 점수
-    cctv_details = []
+    cctv_mitigation_score = 0
 
     if cctv_df is not None:
-        # 거리 계산 및 필터링
-        # 데이터가 클 경우 사전에 경위도 오차범위 컷을 하면 더 빨라집니다.
-        df_filtered = cctv_df[
-            (cctv_df["WGS84위도"].between(lat - 0.01, lat + 0.01)) &
-            (cctv_df["WGS84경도"].between(lon - 0.01, lon + 0.01))
-            ].copy()
+        # 데이터프레임 컬럼 공백 유연성 가드 코드 추가
+        lat_col = "WGS84위도" if "WGS84위도" in cctv_df.columns else ("WGS84 위도" if "WGS84 위도" in cctv_df.columns else None)
+        lon_col = "WGS84경도" if "WGS84경도" in cctv_df.columns else ("WGS84 경도" if "WGS84 경도" in cctv_df.columns else None)
 
-        if not df_filtered.empty:
-            df_filtered["distance"] = df_filtered.apply(
-                lambda row: calculate_distance(lat, lon, row["WGS84위도"], row["WGS84경도"]), axis=1
-            )
-            # 반경 이내 CCTV만 추출
-            df_result = df_filtered[df_filtered["distance"] <= radius]
+        if lat_col and lon_col:
+            df_filtered = cctv_df[(cctv_df[lat_col].between(lat - 0.01, lat + 0.01)) & (
+                cctv_df[lon_col].between(lon - 0.01, lon + 0.01))].copy()
+            if not df_filtered.empty:
+                df_filtered["distance"] = df_filtered.apply(
+                    lambda r: calculate_distance(lat, lon, r[lat_col], r[lon_col]), axis=1)
+                df_result = df_filtered[df_filtered["distance"] <= radius]
+                nearby_cctv_count = len(df_result)
+                if nearby_cctv_count > 0:
+                    total_camera_units = int(df_result["카메라대수"].fillna(1).sum())
+                    cctv_mitigation_score = min(total_camera_units * 3, 15)
 
-            nearby_cctv_count = len(df_result)
-
-            if nearby_cctv_count > 0:
-                # '카메라대수' 수치 합산 (결측치는 1대로 가정)
-                total_camera_units = int(df_result["카메라대수"].fillna(1).sum())
-                # '카메라화소수' 평균 계산 (결측치는 200만 화소 표준 가정)
-                avg_pixels = float(df_result["카메라화소수"].fillna(2000000).mean())
-
-                # 방범 지수(경감 점수) 알고리즘 설계
-                # 예시: 카메라 1대당 3점 경감 (최대 15점), 평균 화소수가 200만 이상이면 추가 5점 경감
-                unit_mitigation = min(total_camera_units * 3, 15)
-                pixel_mitigation = 5 if avg_pixels >= 2000000 else 0
-                cctv_mitigation_score = unit_mitigation + pixel_mitigation
-
-                # 상위 3개 장소 샘플 데이터 반환용 저장
-                for _, row in df_result.head(3).iterrows():
-                    cctv_details.append({
-                        "address": row.get("소재지도로명주소") or row.get("소재지지번주소") or "주소 불명",
-                        "purpose": str(row.get("설치목적구분")),
-                        "cameras": int(row.get("카메라대수") or 1),
-                        "distance_m": round(row["distance"], 1)
-                    })
-
-    # 3. 최종 종합 위험도 결합 계산
-    # WMS 위험도 점수에서 CCTV 방범 요소를 차감하되 최소 0점 보장
     final_risk_score = max(wms_risk_score - cctv_mitigation_score, 0)
+    status = "안전" if final_risk_score == 0 else (
+        "보통" if final_risk_score < 40 else ("주의" if final_risk_score < 75 else "위험"))
 
-    # 종합 등급 분류
-    if final_risk_score == 0:
-        status = "안전"
-    elif final_risk_score < 40:
-        status = "보통"
-    elif final_risk_score < 75:
-        status = "주의"
-    else:
-        status = "위험"
-
-    return {
-        "analysis_info": {
-            "requested_type": type,
-            "target_coordinates": {"lon": lon, "lat": lat},
-            "search_radius_m": radius
-        },
-        "wms_environmental_risk": {
-            "wms_score": wms_risk_score,
-            "pixel_rgba": pixel_rgba
-        },
-        "cctv_security_factor": {
-            "nearby_cctv_places": nearby_cctv_count,
-            "total_camera_units": total_camera_units,
-            "average_camera_pixels": round(avg_pixels, 0),
-            "mitigation_score": cctv_mitigation_score,
-            "sample_details": cctv_details
-        },
-        "final_composite_risk": {
-            "score": final_risk_score,
-            "level": status
-        }
-    }
+    return {"final_composite_risk": {"score": final_risk_score, "level": status}}
 
 
-# -------------------------------------------------------------------------
-# [엔드포인트 3] 여러 위험 요소 중 위험/주의 항목만 추출하여 반환
-# -------------------------------------------------------------------------
 @app.get("/map/multi-risk-analysis")
-async def analyze_multiple_safety_risks(
-        types: List[str] = Query(..., description="분석할 위험 종류 목록 (예: types=theft&types=violence)"),
-        lon: float = Query(..., description="경도 (WGS84 경도)"),
-        lat: float = Query(..., description="위도 (WGS84 위도)"),
-        radius: float = Query(100.0, description="CCTV 검색 반경 (미터 단위)")
-):
-    # 입력된 위험 타입 검증
+async def analyze_multiple_safety_risks(types: List[str] = Query(...), lon: float = Query(...), lat: float = Query(...),
+                                        radius: float = Query(100.0)):
     invalid_types = [t for t in types if t not in TYPE_LIST]
-    if invalid_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"올바르지 않은 위험 종류가 포함되어 있습니다: {invalid_types}"
-        )
+    if invalid_types: raise HTTPException(status_code=400, detail=f"Invalid types: {invalid_types}")
 
     delta = 0.0001
     bbox_str = f"{lon - delta},{lat - delta},{lon + delta},{lat + delta}"
+    detected_warnings = []
 
-    detected_warnings = []  # 위험 및 주의 요소가 발견된 항목들을 담을 리스트
-    all_results = {}  # 전체 검사 결과 기록용
-
-    # 1. 입력받은 모든 타입에 대해 개별 분석 진행
     for r_type in types:
-        wms_params = {
-            "serviceKey": SERVICE_KEY, "srs": "EPSG:4326", "bbox": bbox_str,
-            "format": "image/png", "width": "3", "height": "3", "transparent": "TRUE",
-        }
-        WMS_URL = f"https://www.safemap.go.kr/openapi2/IF_00{TYPE_LIST[r_type]}_WMS"
-
-        score = 0
-        status = "안전"
-
+        wms_params = {"serviceKey": SERVICE_KEY, "srs": "EPSG:4326", "bbox": bbox_str, "format": "image/png",
+                      "width": "3", "height": "3", "transparent": "TRUE"}
         try:
-            response = await async_client.get(WMS_URL, params=wms_params)
+            response = await async_client.get(f"https://www.safemap.go.kr/openapi2/IF_00{TYPE_LIST[r_type]}_WMS",
+                                              params=wms_params)
             if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
                 image = Image.open(io.BytesIO(response.content)).convert("RGBA")
                 _, g, _, a = image.getpixel((1, 1))
-
-                if a > 0:  # 색상이 투명이 아닌 경우 (위험 요소 존재)
+                if a > 0:
                     score = round(30 + ((255 - g) / 255) * 70)
-
-                    # 등급 분류
-                    if score < 60:
-                        status = "주의"
-                    else:
-                        status = "위험"
+                    status = "주의" if score < 60 else "위험"
+                    detected_warnings.append({"risk_type": r_type, "level": status, "score": score})
         except Exception as exc:
-            print(f"[{r_type}] WMS 분석 실패: {exc}")
-            status = "분석 실패"
+            print(exc)
 
-        all_results[r_type] = {"score": score, "level": status}
+    return {"detected_risk_elements": detected_warnings, "has_risk_element": len(detected_warnings) > 0}
 
-        # 🔥 위험 또는 주의 요소가 있는 입력값만 필터링하여 수집
-        if status in ["주의", "위험"]:
-            detected_warnings.append({
-                "risk_type": r_type,
-                "level": status,
-                "score": score
-            })
-
-    # 2. CSV 기반 주변 CCTV 분석 (인프라 현황 파악용)
-    nearby_cctv_count = 0
-    total_camera_units = 0
-    cctv_details = []
-
-    if cctv_df is not None:
-        try:
-            lat_col = "WGS84 위도" if "WGS84 위도" in cctv_df.columns else ("위도" if "위도" in cctv_df.columns else None)
-            lon_col = "WGS84 경도" if "WGS84 경도" in cctv_df.columns else ("경도" if "경도" in cctv_df.columns else None)
-
-            if lat_col and lon_col:
-                df_filtered = cctv_df[
-                    (cctv_df[lat_col].between(lat - 0.01, lat + 0.01)) &
-                    (cctv_df[lon_col].between(lon - 0.01, lon + 0.01))
-                    ].copy()
-
-                if not df_filtered.empty:
-                    df_filtered["distance"] = df_filtered.apply(
-                        lambda row: calculate_distance(lat, lon, row[lat_col], row[lon_col]), axis=1
-                    )
-                    df_result = df_filtered[df_filtered["distance"] <= radius]
-                    nearby_cctv_count = len(df_result)
-
-                    if nearby_cctv_count > 0:
-                        cam_count_col = "카메라대수" if "카메라대수" in df_result.columns else \
-                        [c for c in df_result.columns if "대수" in c or "카메라" in c][0]
-                        total_camera_units = int(df_result[cam_count_col].fillna(1).sum())
-
-                        for _, row in df_result.head(3).iterrows():
-                            addr = row.get("소재지도로명주소") or row.get("소재지지번주소") or "주소 불명"
-                            cctv_details.append({
-                                "address": str(addr),
-                                "cameras": int(row.get(cam_count_col, 1)),
-                                "distance_m": round(row["distance"], 1)
-                            })
-        except Exception as e:
-            print(f"❌ CCTV 분석 중 오류 발생: {e}")
-
-    # 3. 최종 결과 반환 구조
-    return {
-        "analysis_info": {
-            "target_coordinates": {"lon": lon, "lat": lat},
-            "search_radius_m": radius
-        },
-        # 핵심 피드백: 위험 및 주의가 감지된 항목 리스트
-        "detected_risk_elements": detected_warnings,
-        "has_risk_element": len(detected_warnings) > 0,
-
-        # 참고용 주변 방범 인프라 상태
-        "security_infrastructure": {
-            "nearby_cctv_places": nearby_cctv_count,
-            "total_camera_units": total_camera_units,
-            "sample_details": cctv_details
-        },
-        # 검사한 모든 요소의 상세 데이터
-        "full_inspection_details": all_results
-    }
 
 if __name__ == "__main__":
     import uvicorn
