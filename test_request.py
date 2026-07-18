@@ -1,55 +1,41 @@
-import io
-import matplotlib.pyplot as plt
-import requests
-from PIL import Image
+import asyncio
+import httpx
 
-# 1. 실행 중인 FastAPI 서버의 WMS 엔드포인트 주소
-TEST_URL = "http://127.0.0.1:8000/map/wms/sexual_crime"
+BASE_URL = "http://localhost:8000"
 
-# 2. 테스트용 파라미터 설정 (서울 시청 중심 부근 영역)
-# srs가 EPSG:4326이므로 경도,위도 순서로 범위를 지정합니다.
-params = {
-    "bbox": "126.970,37.560,126.985,37.570",
-    "srs": "EPSG:4326",
-    "width": "512",
-    "height": "512",
-}
 
-print("FastAPI 서버에 WMS 이미지 요청을 보냅니다...")
+async def test_send_api():
+    user_id = "child_A"
+    guardian_email = "krsoup09@gmail.com"  # ◀ 실제 수신할 보호자 메일 주소 입력
 
-try:
-    # FastAPI 서버로 요청 송신
-    response = requests.get(TEST_URL, params=params)
+    async with httpx.AsyncClient() as client:
+        # 테스트 전제조건: 서버에 해당 유저의 위치 데이터가 한 번은 업로드되어 있어야 합니다.
+        print("1️⃣ 테스트용 자녀 위치 데이터를 먼저 업로드합니다...")
+        upload_payload = {
+            "user_id": user_id,
+            "lat": 37.249283,
+            "lon": 127.073483
+        }
+        await client.post(f"{BASE_URL}/user/location", json=upload_payload)
 
-    print(f"응답 상태 코드: {response.status_code}")
-    print(f"응답 Content-Type: {response.headers.get('Content-Type')}")
+        # 이메일 발송 API 호출 (이메일 주소만 파라미터로 전송)
+        print("\n2️⃣ 서버에 이메일 발송 엔드포인트를 요청합니다...")
+        params = {
+            "user_id": user_id,
+            "email": guardian_email
+        }
 
-    if response.status_code == 200:
-        content_type = response.headers.get("Content-Type", "")
+        response = await client.post(f"{BASE_URL}/user/send-alert-email", params=params)
 
-        if "image" in content_type:
-            # 바이너리 데이터를 이미지로 변환하여 화면에 표시
-            image = Image.open(io.BytesIO(response.content))
-
-            plt.figure(figsize=(6, 6))
-            plt.imshow(image)
-            plt.title("FastAPI WMS Test Result")
-            plt.axis("off")
-            plt.show()
-
-            # 필요한 경우 파일로 저장
-            # image.save("fastapi_wms_result.png")
-            print("테스트 성공: 이미지를 정상적으로 띄웠습니다.")
+        if response.status_code == 200:
+            print("\n==================================================")
+            print("🎉 서버 응답 성공!")
+            print(response.json()["message"])
+            print("==================================================")
+            print("💡 잠시 후 입력하신 수신 메일함을 확인해 보세요.")
         else:
-            print("성공 코드는 받았으나 이미지가 아닙니다. 응답 본문:")
-            print(response.text)
+            print(f"❌ 요청 실패: {response.status_code}, {response.text}")
 
-    elif response.status_code == 400:
-        print("서버가 400 에러를 반환했습니다. 행안부 API가 보낸 메시지:")
-        print(response.text)
-    else:
-        print(f"서버 에러 발생 (코드: {response.status_code}):")
-        print(response.text)
 
-except Exception as e:
-    print(f"테스트 중 오류가 발생했습니다: {e}")
+if __name__ == "__main__":
+    asyncio.run(test_send_api())
