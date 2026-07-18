@@ -1,41 +1,43 @@
 import asyncio
 import httpx
 
-BASE_URL = "http://localhost:8000"
+# FastAPI 서버 주소
+BASE_URL = "http://127.0.0.1:8000"
 
 
-async def test_send_api():
-    user_id = "child_A"
-    guardian_email = "krsoup09@gmail.com"  # ◀ 실제 수신할 보호자 메일 주소 입력
+async def main():
+    # 1. 서버로 전송할 테스트 데이터 객체
+    payload = {
+        "to_email": "krsoup09@gmail.com",  # 👈 수신할 메일 주소를 적어주세요.
+        "risk_type": "theft (절도 발생 구역)",
+        "detected_at": "2026-07-19 11:55:00",
+        "latitude": 37.5665,
+        "longitude": 126.9779,
+        "tracking_url": "https://maps.google.com"
+    }
 
-    async with httpx.AsyncClient() as client:
-        # 테스트 전제조건: 서버에 해당 유저의 위치 데이터가 한 번은 업로드되어 있어야 합니다.
-        print("1️⃣ 테스트용 자녀 위치 데이터를 먼저 업로드합니다...")
-        upload_payload = {
-            "user_id": user_id,
-            "lat": 37.249283,
-            "lon": 127.073483
-        }
-        await client.post(f"{BASE_URL}/user/location", json=upload_payload)
+    print("[테스트] 이메일 알림 발송 요청을 시작합니다...")
 
-        # 이메일 발송 API 호출 (이메일 주소만 파라미터로 전송)
-        print("\n2️⃣ 서버에 이메일 발송 엔드포인트를 요청합니다...")
-        params = {
-            "user_id": user_id,
-            "email": guardian_email
-        }
+    # 2. 비동기 HTTP 클라이언트로 POST 요청 전송
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            response = await client.post(f"{BASE_URL}/send-notification", json=payload)
 
-        response = await client.post(f"{BASE_URL}/user/send-alert-email", params=params)
+            # 3. 결과 출력
+            print(f"▶ 서버 응답 상태 코드: {response.status_code}")
+            print(f"▶ 서버 응답 데이터: {response.json()}")
 
-        if response.status_code == 200:
-            print("\n==================================================")
-            print("🎉 서버 응답 성공!")
-            print(response.json()["message"])
-            print("==================================================")
-            print("💡 잠시 후 입력하신 수신 메일함을 확인해 보세요.")
-        else:
-            print(f"❌ 요청 실패: {response.status_code}, {response.text}")
+            if response.status_code == 200:
+                print("🎉 이메일 발송 요청 성공!")
+            else:
+                print("❌ 발송 실패 (서버 에러)")
+
+        except httpx.ConnectError:
+            print("❌ 서버 연결 실패! FastAPI 서버가 켜져 있는지 확인하세요 (port: 8000)")
+        except Exception as e:
+            print(f"❌ 오류 발생: {e}")
 
 
+# 스크립트 실행 진입점
 if __name__ == "__main__":
-    asyncio.run(test_send_api())
+    asyncio.run(main())

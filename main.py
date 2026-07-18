@@ -4,10 +4,15 @@ from contextlib import asynccontextmanager
 from typing import List, Dict
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import Response, HTMLResponse
-from pydantic import BaseModel
+from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
+from pydantic import BaseModel, EmailStr
 import httpx
 import pandas as pd
 from PIL import Image
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # -------------------------------------------------------------------------
 # [데이터 구조] 실시간 다중 사용자 위치 데이터 저장소
@@ -16,7 +21,83 @@ from PIL import Image
 # 스레드 세이프하게 접근 가능한 인메모리 딕셔너리를 구성합니다.
 user_locations: Dict[str, Dict] = {}
 
+# 1. 이메일 서버 및 API 설정 (본인의 정보로 변경 필요)
+GOOGLE_MAPS_API_KEY = os.getenv("api_key")
 
+conf = ConnectionConfig(
+    MAIL_USERNAME="krsoup09@gmail.com",
+    MAIL_PASSWORD=os.getenv("app_pw"),
+    MAIL_FROM="krsoup09@gmail.com",
+    MAIL_PORT=587,
+    MAIL_SERVER="smtp.gmail.com",
+    MAIL_STARTTLS=True,
+    MAIL_SSL_TLS=False,
+    USE_CREDENTIALS=True,
+    VALIDATE_CERTS=True
+)
+
+# 3. HTML 템플릿 정의
+HTML_TEMPLATE = """
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>위험 지역 진입 알림</title>
+  </head>
+  <body style="margin:0; padding:0; background:#f5f6f8; font-family:Arial, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; color:#222222;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f5f6f8;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:620px; background:#ffffff; border:1px solid #e5e7eb;">
+            <tr>
+              <td style="padding:24px 32px; border-bottom:1px solid #e5e7eb;">
+                <p style="margin:0; color:#3567b7; font-size:15px; font-weight:700;">Safe Walk 알림</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:34px 32px 28px;">
+                <h1 style="margin:0 0 16px; color:#1f2937; font-size:25px; font-weight:700; line-height:1.45;">⚠️ 자녀가 위험 지역에 진입했습니다</h1>
+                <p style="margin:0 0 24px; color:#4b5563; font-size:15px; line-height:1.7;">아래 위치는 위험 요소가 감지된 시점의 자녀 위치입니다. 안전 여부를 확인해 주세요.</p>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px; border-collapse:collapse;">
+                  <tr>
+                    <td style="width:112px; padding:11px 12px; color:#6b7280; font-size:14px; border-top:1px solid #e5e7eb; background:#fafafa;">감지된 위험</td>
+                    <td style="padding:11px 12px; color:#1f2937; font-size:14px; font-weight:700; border-top:1px solid #e5e7eb;">{risk_type}</td>
+                  </tr>
+                  <tr>
+                    <td style="width:112px; padding:11px 12px; color:#6b7280; font-size:14px; border-top:1px solid #e5e7eb; background:#fafafa;">감지 시각</td>
+                    <td style="padding:11px 12px; color:#1f2937; font-size:14px; border-top:1px solid #e5e7eb;">{detected_at}</td>
+                  </tr>
+                </table>
+
+                <a href="{tracking_url}" target="_blank" style="display:block; text-decoration:none;">
+                  <img src="https://maps.googleapis.com/maps/api/staticmap?center={latitude},{longitude}&zoom=16&size=600x320&scale=2&maptype=roadmap&markers=color:red%7Clabel:C%7C{latitude},{longitude}&key={google_maps_key}" alt="자녀 위치 지도" width="554" style="display:block; width:100%; max-width:554px; height:auto; border:0;" />
+                </a>
+
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px; border-top:1px solid #e5e7eb; color:#8b949e; font-size:12px; line-height:1.6;">본 메일은 Safe Walk의 위험 지역 알림 서비스에 의해 자동 발송되었습니다.</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
+
+# 2. 클라이언트 입력 데이터 스키마 정의
+class NotificationRequest(BaseModel):
+    to_email: EmailStr
+    risk_type: str
+    detected_at: str
+    latitude: float
+    longitude: float
+    tracking_url: str = "https://example.com/track" # 기본값 예시
 
 class LocationUpdate(BaseModel):
     user_id: str
@@ -92,6 +173,35 @@ TYPE_LIST = {
     "attraction": 48, "drug": 74, "murder": 73, "robbery": 86, "violence": 83
 }
 
+
+# 4. 알림 발송 엔드포인트
+@app.post("/send-notification")
+async def send_notification(payload: NotificationRequest):
+    # HTML 내 중괄호 치환 프로그래밍 처리
+    formatted_html = HTML_TEMPLATE.format(
+        risk_type=payload.risk_type,
+        detected_at=payload.detected_at,
+        tracking_url=payload.tracking_url,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        google_maps_key=GOOGLE_MAPS_API_KEY
+    )
+
+    # 이메일 메시지 생성
+    message = MessageSchema(
+        subject="[Safe Walk] 자녀 위험 지역 진입 알림",
+        recipients=[payload.to_email],
+        body=formatted_html,
+        subtype=MessageType.html
+    )
+
+    # 비동기 이메일 발송
+    fm = FastMail(conf)
+    try:
+        await fm.send_message(message)
+        return {"status": "success", "message": "Notification email sent successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------------------------------------------------------------
 # [엔드포인트 1] 기본 WMS 이미지 프록시 반환
